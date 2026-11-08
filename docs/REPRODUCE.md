@@ -111,6 +111,25 @@ CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
 
 Each evaluation output directory must be new. The trainer saves validation metrics, predictions, losses, timing information and PNG/SVG curves. The evaluator saves a report and full official-test predictions.
 
+## Export the final model
+
+Export the final validation-selected checkpoint as a complete merged model. This command verifies component parameter counts and save/reload outputs on training examples, and includes the task settings, processor/tokenizer and upstream model license.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/export_release_model.py \
+  --checkpoint "$RUN/final/checkpoints/best" \
+  --repo-id your-account/your-model \
+  --output "$RUN/release"
+
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
+  --model "$RUN/release" --data-root data \
+  --split test --modes both --output "$RUN/release_test"
+```
+
+The exporter accepts the chosen five-epoch final recipe described in [METHOD.md](METHOD.md). Evaluate the exported weights separately because BF16 adapter merging can change numerical outputs. Add a model card with the exported model's measured results before distribution.
+
+To evaluate a published release, replace the local `--model` path with its Hugging Face model ID. The repository README lists the three released models.
+
 ## Resume
 
 For interrupted training, reuse the stage's config and output directory and add `--resume <stage-output>/checkpoints/latest`. Teacher resume uses the original four-rank topology and recovery resume uses one rank. Cache creation accepts `--resume` to reuse validated targets or complete a partial cache.

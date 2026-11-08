@@ -12,7 +12,7 @@ The final method uses activation-based FFN channel pruning and two recovery stag
 | MIntRec 20-class | Audio, video, provided transcript | 78.88% accuracy | **78.43% accuracy** | 1 / 19 |
 | MER2023-SEMI | Audio, video | 86.53% weighted F1 | **88.63% weighted F1** | 4 / 17 |
 
-Scores use complete official test sets and validation-selected checkpoints. Rankings use the published comparison configurations in [MIntRec](https://arxiv.org/abs/2209.04355), [ARL](https://proceedings.neurips.cc/paper_files/paper/2025/file/cbed27fa7f3b112caebf3ba6e8b3cd8c-Paper-Conference.pdf) and [Emotion-LLaMA](https://arxiv.org/abs/2406.11161). The comparison scope is described in [the method document](docs/METHOD.md).
+Scores use validation-selected training checkpoints on complete official test sets. Model cards report separate checks of the merged release weights. Rankings use the published comparison configurations in [MIntRec](https://arxiv.org/abs/2209.04355), [ARL](https://proceedings.neurips.cc/paper_files/paper/2025/file/cbed27fa7f3b112caebf3ba6e8b3cd8c-Paper-Conference.pdf) and [Emotion-LLaMA](https://arxiv.org/abs/2406.11161). The comparison scope is described in [the method document](docs/METHOD.md).
 
 | Component | Original parameters | Final parameters |
 | --- | ---: | ---: |
@@ -55,6 +55,29 @@ python scripts/prepare_mer2023.py --data-root data/MER2023 --extract-media
 ```
 
 Existing model and prepared dataset directories can be linked as `models/Qwen2.5-Omni-3B`, `data/MIntRec` and `data/MER2023`.
+
+## Download and evaluate the released models
+
+Each Hugging Face repository contains a complete merged model, its processor/tokenizer, task settings, license and verified test metrics.
+
+| Task | Hugging Face model | Merged release test result |
+| --- | --- | --- |
+| MIntRec 2-class | [smarthome-omni-mintrec2](https://huggingface.co/dongminkim17/smarthome-omni-mintrec2) | 92.13% accuracy |
+| MIntRec 20-class | [smarthome-omni-mintrec20](https://huggingface.co/dongminkim17/smarthome-omni-mintrec20) | 78.65% accuracy |
+| MER2023-SEMI | [smarthome-omni-mer2023-semi](https://huggingface.co/dongminkim17/smarthome-omni-mer2023-semi) | 88.14% weighted F1 |
+
+After preparing the matching dataset, choose a released model and evaluate it directly. The evaluator downloads the Hub snapshot and uses the saved task prompts, label order and preprocessing settings.
+
+```sh
+MODEL=dongminkim17/smarthome-omni-mintrec2
+
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
+  --model "$MODEL" --data-root data \
+  --split test --modes both \
+  --output artifacts/evaluation/mintrec2_released
+```
+
+Use a new output directory for each evaluation. `--revision <commit>` pins a Hub snapshot. `--model /path/to/downloaded/model` evaluates a local release. A native Transformers loading example is included in each model card.
 
 ## Train and evaluate the original model
 
@@ -201,7 +224,8 @@ python scripts/plot_training.py "$RUN/final"
 | `scripts/cache_teacher_logits.py` | Cache teacher class logits on training samples |
 | `scripts/cache_encoder_features.py` | Cache teacher audio and vision output features |
 | `scripts/export_recovered_model.py` | Merge the first recovery into its pruned base |
-| `scripts/evaluate.py` | Evaluate a saved validation-selected checkpoint on dev or official test |
+| `scripts/export_release_model.py` | Merge and verify the final decoder/encoder adapters for distribution |
+| `scripts/evaluate.py` | Evaluate a training checkpoint or released Hub/local model on dev or official test |
 | `scripts/plot_training.py` | Generate training and validation plots from saved metrics |
 
 The repository also contains experimental pruning variants and scheduler scripts used in the wider study. The reproduction instructions identify the entry points for the chosen method.

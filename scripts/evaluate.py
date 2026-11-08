@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a saved task checkpoint on an explicitly selected dev or test split.
+"""Evaluate a training checkpoint or released task model on a dev or test split.
 
 Use plain Python for one GPU or torchrun --nproc_per_node=4 for four GPUs. A run
 root resolves to checkpoints/best; an exact checkpoint (including latest) is also
@@ -59,8 +59,13 @@ def source_hashes():
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--checkpoint', type=Path, required=True,
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--checkpoint', type=Path,
                         help='Exact full checkpoint or run root containing checkpoints/best')
+    source.add_argument('--model', help='Released model directory or Hugging Face model ID')
+    parser.add_argument('--revision', help='Hugging Face model revision for --model')
+    parser.add_argument('--data-root', type=Path, default=ROOT/'data', help='Dataset root for --model')
+    parser.add_argument('--cache-dir', type=Path, default=ROOT/'artifacts/pilot_cache', help='Input cache for --model')
     parser.add_argument('--split', choices=('dev', 'test'), required=True)
     parser.add_argument('--output', type=Path, required=True, help='New directory for this evaluation')
     parser.add_argument('--modes', choices=('logit', 'greedy', 'both'), help='Override saved evaluation modes')
@@ -72,7 +77,13 @@ def parse_args():
 
 
 def run(args):
-    # Inference uses only already downloaded weights, saved JSON metadata, and local media.
+    # Resolve a requested Hub snapshot before switching inference to local files.
+    released = getattr(args, 'model', None) is not None
+    if released:
+        from smarthome_efficiency.release import resolve_model, evaluation_config
+        checkpoint = resolve_model(args.model, args.revision)
+        release, cfg = evaluation_config(checkpoint, args.data_root, args.cache_dir)
+        metadata = {'global_step': release['source_global_step'], 'config': cfg}
     os.environ['HF_HUB_OFFLINE'] = '1'
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     import torch
@@ -85,13 +96,14 @@ def run(args):
     from smarthome_efficiency.model import PilotModel
     from smarthome_efficiency.training import config_fingerprint, configure_determinism
 
-    checkpoint = resolve_evaluation_checkpoint(args.checkpoint)
-    metadata = json.loads((checkpoint / 'metadata.json').read_text())
-    cfg = dict(metadata['config'])
-    compact_sidecar = Path(cfg['model']) / 'compression.json'
-    compact_hash = hashlib.sha256(compact_sidecar.read_bytes()).hexdigest() if compact_sidecar.is_file() else None
-    if metadata.get('base_model_manifest_sha256') != compact_hash:
-        raise ValueError('Compact base checkpoint differs from the saved evaluation checkpoint')
+    if not released:
+        checkpoint = resolve_evaluation_checkpoint(args.checkpoint)
+        metadata = json.loads((checkpoint / 'metadata.json').read_text())
+        cfg = dict(metadata['config'])
+        compact_sidecar = Path(cfg['model']) / 'compression.json'
+        compact_hash = hashlib.sha256(compact_sidecar.read_bytes()).hexdigest() if compact_sidecar.is_file() else None
+        if metadata.get('base_model_manifest_sha256') != compact_hash:
+            raise ValueError('Compact base checkpoint differs from the saved evaluation checkpoint')
     cfg.setdefault('deterministic', True)
     configure_determinism(cfg)
     modes = normalize_modes(args.modes if args.modes is not None else cfg['eval_modes'])
@@ -150,8 +162,11 @@ def run(args):
             write_json(output / 'data_manifest.json', manifest)
             write_json(output / 'provenance.json', {
                 'source_sha256': source_hashes(), 'python': sys.version, 'torch': str(torch.__version__),
-                'checkpoint_metadata_sha256': hashlib.sha256((checkpoint / 'metadata.json').read_bytes()).hexdigest(),
-                'checkpoint_adapter_sha256': hashlib.sha256((checkpoint / 'adapter/adapter_model.safetensors').read_bytes()).hexdigest(),
+                **({'release_manifest_sha256': hashlib.sha256((checkpoint/'release.json').read_bytes()).hexdigest()}
+                   if released else {
+                       'checkpoint_metadata_sha256': hashlib.sha256((checkpoint/'metadata.json').read_bytes()).hexdigest(),
+                       'checkpoint_adapter_sha256': hashlib.sha256((checkpoint/'adapter/adapter_model.safetensors').read_bytes()).hexdigest(),
+                   }),
                 'labels': labels, 'data_fingerprint': config_fingerprint(manifest),
                 'cuda_visible_devices': os.environ.get('CUDA_VISIBLE_DEVICES'), 'world_size': world,
                 'checkpoint': str(checkpoint), 'split': args.split,
@@ -161,7 +176,11 @@ def run(args):
             cfg['model'], cfg['task'], labels, cfg['cache_dir'], max_frames=cfg['max_frames'],
             max_pixels=cfg['max_pixels'], use_transcript=cfg['use_transcript'], device_index=local_rank,
         )
-        runner.load_adapter(checkpoint / 'adapter', trainable=False)
+        if released:
+            runner.load_model()
+            runner.model.requires_grad_(False)
+        else:
+            runner.load_adapter(checkpoint / 'adapter', trainable=False)
         if any(parameter.requires_grad for parameter in runner.model.parameters()):
             raise RuntimeError('Evaluation adapter unexpectedly has trainable parameters')
         torch.cuda.reset_peak_memory_stats(local_rank)
