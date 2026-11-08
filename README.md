@@ -22,7 +22,7 @@ Scores use complete official test sets and validation-selected checkpoints. Rank
 
 Counts cover the understanding components used for classification. Speech-generation modules Talker and Token2Wav are outside this pipeline. The final language model meets the 2B boundary and each encoder meets the 1B boundary.
 
-## Setup and reproduction
+## Setup
 
 ```sh
 git clone https://github.com/dongminkim17/smarthome-model-efficiency.git
@@ -31,9 +31,166 @@ conda env create -f environment.yml
 conda activate smarthome_efficiency
 ```
 
-Place a local Qwen2.5-Omni-3B snapshot at `models/Qwen2.5-Omni-3B`, and prepare the datasets under `data/`. Existing model and dataset directories can be linked into these locations.
+Run the commands below from the repository root. They use the selected task's YAML configs and write outputs under `artifacts/reproduce/<task>/`.
 
-Follow [REPRODUCE.md](docs/REPRODUCE.md) for data preparation and the full teacher, pruning, recovery and official-test commands. The commands use the repository root as the working directory. [METHOD.md](docs/METHOD.md) records the architecture, losses, splits and shared training recipe.
+### Prepare model and datasets
+
+Download the pretrained snapshot used in the experiments.
+
+```sh
+python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen2.5-Omni-3B', revision='f75b40e3da2003cdd6e1829b1f420ca70797c34e', local_dir='models/Qwen2.5-Omni-3B')"
+```
+
+Prepare MIntRec for either intent task.
+
+```sh
+mkdir -p data
+python scripts/download_mintrec.py --output data/MIntRec
+```
+
+For MER2023-SEMI, obtain official dataset access and arrange the supplied archives as shown in [the MER preparation instructions](docs/REPRODUCE.md#prepare-model-and-data), then run the preparation command.
+
+```sh
+python scripts/prepare_mer2023.py --data-root data/MER2023 --extract-media
+```
+
+Existing model and prepared dataset directories can be linked as `models/Qwen2.5-Omni-3B`, `data/MIntRec` and `data/MER2023`.
+
+## Train and evaluate the original model
+
+Choose a task. Use `mintrec2` for binary intent, `mintrec20` for fine-grained intent or `mer6` for emotion recognition.
+
+```sh
+TASK=mintrec2
+RUN=artifacts/reproduce/$TASK
+mkdir -p "$RUN"
+```
+
+Keep this output layout when using the supplied recovery configs, which refer to these paths. Select available GPUs through `CUDA_VISIBLE_DEVICES`.
+
+### Train the task teacher
+
+The teacher configs train for five epochs with rank-16 LoRA. This command uses four GPUs with effective batch size four.
+
+```sh
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 \
+  scripts/train.py \
+  --config configs/$TASK.yaml \
+  --output "$RUN/teacher"
+```
+
+For single-GPU teacher training, set `micro_batch_size: 1` and `gradient_accumulation_steps: 4` in the teacher YAML and run the same script with `CUDA_VISIBLE_DEVICES=0 python` in place of `torchrun --standalone --nproc_per_node=4`.
+
+### Evaluate the teacher on the official test set
+
+The training run selects its best checkpoint using validation data. Evaluate that checkpoint to obtain the unpruned baseline result.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
+  --checkpoint "$RUN/teacher/checkpoints/best" \
+  --split test --modes both --output "$RUN/teacher_test"
+```
+
+## Reproduce the compact-model results
+
+Continue with the same `TASK` and `RUN` after teacher training. The following stages each use one GPU. Both recovery stages train for five epochs.
+
+### 1. Prune the language model
+
+Merge the teacher adapter and prune the decoder FFN width from 11,008 to 4,352 using 128 training clips for activation calibration.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/prune_model.py \
+  --source-checkpoint "$RUN/teacher/checkpoints/best" \
+  --method ffn_activation --ffn-width 4352 \
+  --calibration-samples 128 --calibration-seed 42 \
+  --calibration-cache "$RUN/calibration" \
+  --output "$RUN/pruned"
+```
+
+### 2. Cache teacher targets
+
+Compute class logits and encoder features on training samples for the two recovery stages.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/cache_teacher_logits.py \
+  --teacher-checkpoint "$RUN/teacher/checkpoints/best" \
+  --output "$RUN/teacher_targets/classes"
+
+CUDA_VISIBLE_DEVICES=0 python scripts/cache_encoder_features.py \
+  --teacher-checkpoint "$RUN/teacher/checkpoints/best" \
+  --output "$RUN/teacher_targets/features"
+```
+
+### 3. Recover the pruned language model
+
+Apply rank-16 decoder LoRA with SFT and class distillation, then merge the validation-selected adapter into the pruned base.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
+  --config configs/reproduce/$TASK/lm_recovery.yaml \
+  --output "$RUN/lm_recovery"
+
+CUDA_VISIBLE_DEVICES=0 python scripts/export_recovered_model.py \
+  --source-checkpoint "$RUN/lm_recovery/checkpoints/best" \
+  --output "$RUN/recovered_lm"
+```
+
+### 4. Jointly recover the language model and encoders
+
+Apply rank-64 LoRA with SFT, class distillation and audio/vision feature distillation.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
+  --config configs/reproduce/$TASK/final_recovery.yaml \
+  --output "$RUN/final"
+```
+
+The recovery configs use microbatch two with two accumulation steps. For a lower-memory setting, use microbatch one with four accumulation steps to preserve effective batch size four.
+
+### 5. Evaluate the final model on the official test set
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
+  --checkpoint "$RUN/final/checkpoints/best" \
+  --split test --modes both --output "$RUN/test"
+```
+
+To evaluate the intermediate LM recovery, use `--checkpoint "$RUN/lm_recovery/checkpoints/best"` and a separate output directory such as `"$RUN/lm_recovery_test"`.
+
+Repeat the workflow with `TASK=mintrec20` and `TASK=mer6` for the other two settings. [METHOD.md](docs/METHOD.md) describes the data splits, architecture and losses, and [REPRODUCE.md](docs/REPRODUCE.md) provides additional preparation details.
+
+## Evaluate an existing checkpoint
+
+A saved checkpoint can also be evaluated independently. Set `CHECKPOINT` to an existing checkpoint directory containing `metadata.json` and `adapter/`.
+
+```sh
+CHECKPOINT=artifacts/reproduce/mintrec2/final/checkpoints/best
+
+CUDA_VISIBLE_DEVICES=0 python scripts/evaluate.py \
+  --checkpoint "$CHECKPOINT" \
+  --split test --modes both \
+  --output artifacts/evaluation/mintrec2_final
+```
+
+Use `--modes logit`, `--modes greedy` or `--modes both`. Use `--split dev` to evaluate validation data. Each evaluation output directory must be new, and the base model referenced by the saved checkpoint must be available locally.
+
+## Resume training and inspect outputs
+
+Resume an interrupted final-recovery run with its original config and output directory.
+
+```sh
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
+  --config configs/reproduce/$TASK/final_recovery.yaml \
+  --output "$RUN/final" \
+  --resume "$RUN/final/checkpoints/latest"
+```
+
+Training outputs include `metrics.jsonl`, `scalars.csv`, `curves.png`, `curves.svg` and best/latest checkpoint pointers. Official evaluation writes `report.json` and `predictions.jsonl` in the requested output directory. Regenerate a run's curves with the plotting command.
+
+```sh
+python scripts/plot_training.py "$RUN/final"
+```
 
 ## Main entry points
 
@@ -59,12 +216,6 @@ The repository also contains experimental pruning variants and scheduler scripts
 - Local model weights, datasets, experiment outputs and internal project records are covered by `.gitignore`.
 
 For a full optimizer/RNG resume, reuse the original config and output directory with `--resume <run>/checkpoints/latest`. Use `--init-adapter <checkpoint>/adapter` for a fresh optimizer and schedule starting from existing adapter weights.
-
-## CPU tests
-
-```sh
-PYTHONPATH=src python -B -m unittest discover -s tests
-```
 
 ## License
 
