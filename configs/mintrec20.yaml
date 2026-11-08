@@ -1,0 +1,32 @@
+# Teacher SFT. Four GPU ranks give effective batch size four.
+task: mintrec20
+model: models/Qwen2.5-Omni-3B
+data_root: data
+cache_dir: artifacts/pilot_cache
+seed: 42
+split_seed: 42
+deterministic: true
+epochs: 5
+learning_rate: 0.0001
+warmup_ratio: 0.03
+scheduler: cosine
+weight_decay: 0.0
+max_grad_norm: 1.0
+gradient_accumulation_steps: 1
+micro_batch_size: 1
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.0
+lora_target: qv
+max_frames: 8
+max_pixels: 50176
+use_transcript: true
+eval_modes:
+- logit
+- greedy
+selection_mode: logit
+eval_every_fraction: 0.5
+max_new_tokens: 8
+train_limit: null
+dev_limit: null
+num_threads: 2

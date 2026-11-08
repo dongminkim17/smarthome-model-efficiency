@@ -1,0 +1,18 @@
+# Local data, model weights, generated experiment output and internal records
+/data/
+/data_mer_avt_chinese
+/models/
+/artifacts/
+/technical_report/
+/reports/
+/experiments/
+/docs/internal/
+/external/
+
+# Python and local environment files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+!.env.example
