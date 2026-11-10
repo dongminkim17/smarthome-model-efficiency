@@ -241,6 +241,10 @@ The repository also contains experimental pruning variants and scheduler scripts
 
 For a full optimizer/RNG resume, reuse the original config and output directory with `--resume <run>/checkpoints/latest`. Use `--init-adapter <checkpoint>/adapter` for a fresh optimizer and schedule starting from existing adapter weights.
 
+## Acknowledgements
+
+This project received funding from the Korean government (MSIT) through IITP grant **RS-2025-02215122**, *Development and Demonstration of Lightweight AI Model for Smart Homes*.
+
 ## License
 
 Original source code and documentation in this repository are licensed under the [MIT License](LICENSE).
