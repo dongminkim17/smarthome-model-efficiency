@@ -243,7 +243,7 @@ For a full optimizer/RNG resume, reuse the original config and output directory 
 
 ## Acknowledgements
 
-This project received funding from the Korean government (MSIT) through IITP grant **RS-2025-02215122**, *Development and Demonstration of Lightweight AI Model for Smart Homes*.
+This work was supported by Institute of Information & communications Technology Planning & Evaluation (IITP) grant funded by the Korea government (MSIT) (No. RS-2025-02215122, Development and Demonstration of Lightweight AI Model for Smart Homes).
 
 ## License
 
